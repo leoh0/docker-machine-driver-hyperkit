@@ -23,10 +23,10 @@ import (
 	"syscall"
 
 	"github.com/cloudflare/cfssl/log"
-	"github.com/docker/machine/libmachine/drivers"
-	"github.com/docker/machine/libmachine/mcnflag"
-	"github.com/docker/machine/libmachine/mcnutils"
-	"github.com/docker/machine/libmachine/ssh"
+	"github.com/leoh0/machine/libmachine/drivers"
+	"github.com/leoh0/machine/libmachine/mcnflag"
+	"github.com/leoh0/machine/libmachine/mcnutils"
+	"github.com/leoh0/machine/libmachine/ssh"
 	"github.com/pkg/errors"
 )
 

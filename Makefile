@@ -4,9 +4,6 @@ BUILD_DIR ?= out
 ORG := github.com/praveenkumar
 REPOPATH ?= $(ORG)/docker-machine-driver-hyperkit
 
-vendor:
-	dep ensure -v
-
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
@@ -16,7 +13,7 @@ clean:
 	rm -rf vendor
 
 .PHONY: build
-build: $(BUILD_DIR) vendor
+build: $(BUILD_DIR)
 	go build \
 			-installsuffix "static" \
 			-o $(BUILD_DIR)/docker-machine-driver-hyperkit

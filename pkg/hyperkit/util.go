@@ -22,7 +22,7 @@ import (
 	"strings"
 	"os/exec"
 	"os"
-	"github.com/docker/machine/libmachine/log"
+	"github.com/leoh0/machine/libmachine/log"
 	"bufio"
 	"fmt"
 )

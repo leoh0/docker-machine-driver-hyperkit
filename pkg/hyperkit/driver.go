@@ -29,15 +29,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/docker/machine/libmachine/drivers"
-	"github.com/docker/machine/libmachine/log"
-	"github.com/docker/machine/libmachine/state"
+	"regexp"
+
 	nfsexports "github.com/johanneswuerbach/nfsexports"
+	pkgdrivers "github.com/leoh0/docker-machine-driver-hyperkit/pkg/drivers"
+	"github.com/leoh0/machine/libmachine/drivers"
+	"github.com/leoh0/machine/libmachine/log"
+	"github.com/leoh0/machine/libmachine/mcnutils"
+	"github.com/leoh0/machine/libmachine/state"
 	hyperkit "github.com/moby/hyperkit/go"
 	"github.com/pkg/errors"
-	pkgdrivers "github.com/machine-drivers/docker-machine-driver-hyperkit/pkg/drivers"
-	"regexp"
-	"github.com/docker/machine/libmachine/mcnutils"
+	"k8s.io/apimachinery/pkg/util/uuid"
 )
 
 const (
@@ -48,6 +50,7 @@ const (
 	permErr         = "%s needs to run with elevated permissions. " +
 		"Please run the following command, then try again: " +
 		"sudo chown root:wheel %s && sudo chmod u+s %s"
+	defaultSSHUser = "docker"
 )
 
 var (
@@ -75,10 +78,22 @@ type Driver struct {
 func NewDriver(hostName, storePath string) *Driver {
 	return &Driver{
 		BaseDriver: &drivers.BaseDriver{
-			SSHUser: "docker",
+			SSHUser: defaultSSHUser,
 		},
+		CPU: 2,
+		Memory: 6000,
+		DiskSize: 20000,
+		UUID: string(uuid.NewUUID()),
 		CommonDriver: &pkgdrivers.CommonDriver{},
 	}
+}
+
+func (d *Driver) GetSSHUsername() string {
+	if d.SSHUser == "" {
+		d.SSHUser = defaultSSHUser
+	}
+
+	return d.SSHUser
 }
 
 // PreCreateCheck is called to enforce pre-creation steps
@@ -175,20 +190,29 @@ func (d *Driver) Restart() error {
 
 // Start a host
 func (d *Driver) Start() error {
-	h, err := hyperkit.New("", "", filepath.Join(d.StorePath, "machines", d.MachineName))
+	stateDir := filepath.Join(d.StorePath, "machines", d.MachineName)
+	h, err := hyperkit.New("", "", stateDir)
 	if err != nil {
 		return err
 	}
 
 	// TODO: handle the rest of our settings.
 	h.Kernel = d.ResolveStorePath(d.Vmlinuz)
-	h.Initrd =d.ResolveStorePath(d.Initrd)
+	h.Initrd = d.ResolveStorePath(d.Initrd)
 	h.VMNet = true
 	h.ISOImages = []string{d.ResolveStorePath(isoFilename)}
 	h.Console = hyperkit.ConsoleFile
 	h.CPUs = d.CPU
 	h.Memory = d.Memory
 	h.UUID = d.UUID
+
+	h.Disks = []hyperkit.Disk{
+		&hyperkit.RawDisk{
+			Path: pkgdrivers.GetDiskPath(d.BaseDriver),
+			Size: d.DiskSize,
+			Trim: true,
+		},
+	}
 
 	log.Infof("Using UUID %s", h.UUID)
 	mac, err := GetMACAddressFromUUID(h.UUID)
@@ -199,15 +223,8 @@ func (d *Driver) Start() error {
 	// Need to strip 0's
 	mac = trimMacAddress(mac)
 	log.Infof("Generated MAC %s", mac)
-	h.Disks = []hyperkit.DiskConfig{
-		{
-			Path:   pkgdrivers.GetDiskPath(d.BaseDriver),
-			Size:   d.DiskSize,
-			Driver: "virtio-blk",
-		},
-	}
 	log.Infof("Starting with cmdline: %s", d.Cmdline)
-	if err := h.Start(d.Cmdline); err != nil {
+	if _, err := h.Start(d.Cmdline); err != nil {
 		return err
 	}
 
@@ -371,7 +388,11 @@ func (d *Driver) getPid() int {
 		return 0
 	}
 	dec := json.NewDecoder(f)
-	config := hyperkit.HyperKit{}
+
+	var config struct {
+		Pid int `json:"pid"`
+	}
+
 	if err := dec.Decode(&config); err != nil {
 		log.Warnf("Error decoding pid file: %s", err)
 		return 0
