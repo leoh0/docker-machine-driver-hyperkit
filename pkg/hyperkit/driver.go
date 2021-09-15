@@ -21,10 +21,12 @@ package hyperkit
 import (
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"os/user"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -37,6 +39,7 @@ import (
 	"github.com/leoh0/machine/libmachine/log"
 	"github.com/leoh0/machine/libmachine/mcnutils"
 	"github.com/leoh0/machine/libmachine/state"
+	ps "github.com/mitchellh/go-ps"
 	hyperkit "github.com/moby/hyperkit/go"
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/util/uuid"
@@ -73,6 +76,27 @@ type Driver struct {
 	BootInitrd string
 	Initrd     string
 	Vmlinuz    string
+}
+
+// Return the state of the hyperkit pid
+func pidState(pid int) (state.State, error) {
+	if pid == 0 {
+		return state.Stopped, nil
+	}
+	p, err := ps.FindProcess(pid)
+	if err != nil {
+		return state.Error, err
+	}
+	if p == nil {
+		log.Debugf("hyperkit pid %d missing from process table", pid)
+		return state.Stopped, nil
+	}
+	// hyperkit or com.docker.hyper
+	if !strings.Contains(p.Executable(), "hyper") {
+		log.Debugf("pid %d is stale, and is being used by %s", pid, p.Executable())
+		return state.Stopped, nil
+	}
+	return state.Running, nil
 }
 
 func NewDriver(hostName, storePath string) *Driver {
@@ -190,6 +214,10 @@ func (d *Driver) Restart() error {
 
 // Start a host
 func (d *Driver) Start() error {
+	if err := d.recoverFromUncleanShutdown(); err != nil {
+		return err
+	}
+
 	stateDir := filepath.Join(d.StorePath, "machines", d.MachineName)
 	h, err := hyperkit.New("", "", stateDir)
 	if err != nil {
@@ -362,6 +390,52 @@ func (d *Driver) setupNFSShare() error {
 		return err
 	}
 
+	return nil
+}
+
+// recoverFromUncleanShutdown searches for an existing hyperkit.pid file in
+// the machine directory. If it can't find it, a clean shutdown is assumed.
+// If it finds the pid file, it checks for a running hyperkit process with that pid
+// as the existence of a file might not indicate an unclean shutdown but an actual running
+// hyperkit server. This is an error situation - we shouldn't start minikube as there is likely
+// an instance running already. If the PID in the pidfile does not belong to a running hyperkit
+// process, we can safely delete it, and there is a good chance the machine will recover when restarted.
+func (d *Driver) recoverFromUncleanShutdown() error {
+	stateDir := filepath.Join(d.StorePath, "machines", d.MachineName)
+	pidFile := filepath.Join(stateDir, pidFileName)
+
+	if _, err := os.Stat(pidFile); err != nil {
+		if os.IsNotExist(err) {
+			log.Debugf("clean start, hyperkit pid file doesn't exist: %s", pidFile)
+			return nil
+		}
+		return errors.Wrap(err, "stat")
+	}
+
+	log.Warnf("minikube might have been shutdown in an unclean way, the hyperkit pid file still exists: %s", pidFile)
+	bs, err := ioutil.ReadFile(pidFile)
+	if err != nil {
+		return errors.Wrapf(err, "reading pidfile %s", pidFile)
+	}
+	content := strings.TrimSpace(string(bs))
+	pid, err := strconv.Atoi(content)
+	if err != nil {
+		return errors.Wrapf(err, "parsing pidfile %s", pidFile)
+	}
+
+	st, err := pidState(pid)
+	if err != nil {
+		return errors.Wrap(err, "pidState")
+	}
+
+	log.Debugf("pid %d is in state %q", pid, st)
+	if st == state.Running {
+		return nil
+	}
+	log.Debugf("Removing stale pid file %s...", pidFile)
+	if err := os.Remove(pidFile); err != nil {
+		return errors.Wrap(err, fmt.Sprintf("removing pidFile %s", pidFile))
+	}
 	return nil
 }
 
